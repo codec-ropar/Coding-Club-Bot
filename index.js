@@ -7,6 +7,8 @@ New Features:
 
 */
 
+const MAX_PRACTICE = 100;
+const MAX_CONTEST = 800;
 
 const rp = require('request-promise');
 const qrcode = require('qrcode-terminal');
@@ -67,9 +69,12 @@ try {
     update_ratings();
 }
 
-
-
 const client = new Client({
+    webVersionCache: {
+        type: "remote",
+        remotePath:
+          "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
+    },
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
@@ -198,7 +203,7 @@ async function parse(message) {
             case "adduser":
             case "addusers":
             case "add":
-                Adduser(message, argline.toLowerCase());
+                Adduser(message, argline);
                 break;
             
             case "deleteuser":
@@ -223,6 +228,10 @@ async function parse(message) {
             case "ratings":
             case "rating":
                 CommandRatings(message);
+                break;
+
+            case "progress":
+                CommandProgress(message);
                 break;
             
             case "addmember":
@@ -624,7 +633,7 @@ async function Adduser(message, argline) {
         if (handle.length == 0) {
             continue;
         }
-        var handle_exists = false;
+        var handle_exists = "";
         try {
             handle_exists = await user_exists(handle);
         } catch (e) {
@@ -632,16 +641,16 @@ async function Adduser(message, argline) {
             client.sendMessage(message.from, `Error: CodeForces is down!`);
             return;
         }
-        if (!handle_exists) {
+        if (handle_exists=="") {
             reply += `*${handle}* does not exist❌\n`;
             continue;
         }
-        if (CONFIG.groups[groupid].handles.includes(handle)) {
-            reply += `*${handle}* already exists🤖\n`;
+        if (CONFIG.groups[groupid].handles.includes(handle_exists)) {
+            reply += `*${handle_exists}* already exists🤖\n`;
             continue;
         }
-        CONFIG.groups[groupid].handles.push(handle);
-        reply += `*${handle}* added✅\n`;
+        CONFIG.groups[groupid].handles.push(handle_exists);
+        reply += `*${handle_exists}* added✅\n`;
     }
     update_config();
     client.sendMessage(message.from, reply.trim());
@@ -730,6 +739,45 @@ async function CFPerformance(message, args) {
     client.sendMessage(message.from, reply);
 }
 
+//Added by Shubham Aggarwal
+async function CommandProgress(message){
+    var isGroup = await is_group(message);
+    if (!isGroup) {
+        client.sendMessage(message.from, "This command is only available in groups‼️");
+        return;
+    }
+    var groupid = message.from;
+    var handles = CONFIG.groups[groupid].handles;   // This is in lower case
+    if (handles.length == 0) {
+        client.sendMessage(message.from, "No users in the list. Please add users using .adduser command.\n\nUsage:\n*.adduser Handle1 Handle2 ...*");
+        return;
+    }
+
+    var progress = await get_progress(handles);
+    console.log(progress)
+    var handles = Object.keys(progress);
+
+    handles.sort((a,b) => progress[b]['total'] - progress[a]['total']);
+
+    var reply = "*Progress of handles in the group:*\n\n\n```";
+    reply += "       Handle       | Points | Divison (SPC)\n";
+    reply += "==========================================================\n";
+    for (var i = 0; i < handles.length; i++) {
+        var handle = handles[i];
+        var logo = "⚪";
+        if(i==0) logo = "🥇";
+        if(i==1) logo = "🥈";
+        if(i==2) logo = "🥉";
+        var tot = progress[handles[i]]['total'];
+        var sess = progress[handles[i]]['session'];
+        var prac = progress[handles[i]]['practice'];
+        var cont = progress[handles[i]]['contest'];
+        reply += `${logo}${left_align(handle, 18)}|  ${tot} | ${sess}+${prac}+${cont} \n`;
+    }
+    reply += "=============================```";
+
+    client.sendMessage(message.from, reply);
+}
 
 async function CommandRatings(message) {
     var isGroup = is_group(message);
@@ -979,9 +1027,9 @@ async function user_exists(handle) {
     var json_resp = await resp.json();
     // console.log(json);
     if (json_resp.status == "OK") {
-        return true;
+        return json_resp.result[0].handle;
     }
-    return false;
+    return "";
 }
 
 
@@ -1410,3 +1458,157 @@ Credits:
 🗓Date programmed:
 *26 June, 2022*
 `;
+
+
+// Added by Shubham Aggarwal
+async function get_progress(handles)
+{
+    var url = `https://codeforces.com/api/user.status?handle=`;
+    var contest_url = ` https://codeforces.com/api/contest.standings?contestId=`;
+
+    // Date things
+    var start = new Date();
+    start.setMonth(start.getMonth() - 2);
+    start.setHours(0, 0, 0, 0);
+
+    
+    // console.log(json_resp);
+    var progress_data = {};
+    for(var x=0; x<handles.length; x++){
+        progress_data[handles[x]] = {contest: {}, practice: 0};
+    }
+
+    var contest = {};
+    var cs = new Set();
+    var j = 0;
+    while(j < handles.length){
+
+        var json_resp = null;
+        try  {
+            var resp = await fetch(url + (handles[j]));
+            json_resp = await resp.json();
+            if (json_resp.status != "OK") {
+                console.log("Error: " + json_resp.comment);
+                return null;
+            }
+        } catch (e) {
+            console.log("Error: " + e);
+            return null;
+        }
+
+        var s = new Set();
+        var practice =  Array.from(Array(13), () => new Array(32));
+
+        for(var p=0; p<13; p++){
+            for(var q=0; q<32; q++){
+                practice[p][q] = 0;
+            }
+        }
+
+        console.log(json_resp.result.length);
+        for (var i = 0; i < json_resp.result.length; i++) {
+            var r = json_resp.result[i];
+            var d = new Date(0);
+            d.setUTCSeconds(r.creationTimeSeconds);
+            if (d < start) continue;
+            if (r.verdict == "OK"){
+                var x = r.problem.contestId+r.problem.index;
+                if (s.has(x)){
+                    continue;
+                }
+                s.add(x);
+
+                var p = 1200;
+                if ((r.author.participantType == "CONTESTANT") || (r.author.participantType == "OUT_OF_COMPETITION")){
+
+                    if (cs.has(r.problem.contestId)) continue;
+                    cs.add(r.problem.contestId);
+
+                    console.log(r.problem.contestId);
+
+                    // if (r.problem.rating){
+                    //     p = r.problem.rating;
+                    // }
+                    // if(contest.hasOwnProperty(r.problem.contestId)){
+                    //     contest[r.problem.contestId] += (p/10);
+                    // }
+                    // else{
+                    //     contest[r.problem.contestId] = (p/10);
+                    // }
+                    var json_resp2 = null;
+                    try  {
+                        var resp2 = await fetch(contest_url + r.problem.contestId);
+                        json_resp2 = await resp2.json();
+                        if (json_resp2.status != "OK") {
+                            console.log("Error: " + json_resp2.comment);
+                            return null;
+                        }
+                    } catch (e) {
+                        console.log("Error: " + e);
+                        return null;
+                    }
+
+                    var rows = json_resp2.result.rows;
+                    var rank = 0;
+                    var total = 0;
+                    for (var y=0; y < rows.length; y++){
+                        var R = rows[y].party.participantType;
+                        if ((R=="CONTESTANT") || (R=="OUT_OF_COMPETITION")){
+                            total += 1;
+                        }
+                    }
+                    for (var y=0; y < rows.length; y++){
+                        var R = rows[y].party;
+                        if ((R.participantType=="CONTESTANT") || (R.participantType=="OUT_OF_COMPETITION")){
+                            
+                            for (var z=0; z < R.members.length; z++){
+                                if(handles.includes(R.members[z].handle)){
+                                    progress_data[R.members[z].handle]['contest'][r.problem.contestId] = parseInt((MAX_CONTEST*(total-rows[y].rank))/total);
+                                }
+                            }
+
+                        }
+                    }
+                }
+                else{
+                    if (r.problem.rating){
+                        p = r.problem.rating;
+                    }
+                    practice[d.getMonth()][d.getDate()] += (p/100);
+                }
+            }
+        }
+
+        var practice_points = 0;
+        for(var p=0; p<13; p++){
+            for(var q=0; q<32; q++){
+                if (practice[p][q] > MAX_PRACTICE){
+                    practice_points += MAX_PRACTICE;
+                }
+                else{
+                    practice_points += practice[p][q];
+                }
+            }
+        }
+        progress_data[handles[j]]['practice'] = practice_points;
+        j++;
+    }
+
+    toReturn = {}
+    for (var i=0; i < handles.length; i++){
+        var h = handles[i];
+        var data = {};
+        var pts = 0;
+        data['session'] = 0;
+        data['practice'] = progress_data[handles[i]]['practice'];
+        let arr = Object.values(progress_data[handles[i]]['contest']).sort((a,b) => (b-a));
+        for(var j=0; j < Math.min(5, arr.length); j++){
+            pts += arr[j];
+        }
+        data['contest'] = pts;
+        data['total'] = data['session'] + data['practice'] + data['contest'];
+        toReturn[handles[i]] = data;
+    }
+
+    return toReturn;
+}
